@@ -112,5 +112,112 @@ async def agent_tool_patterns():
         else:
             print(f"   Tool {i}: OK — {r['tool']}")
 
+
 # LEVEL 3 — TASKS: BACKGROUND WORK
+async def tasks_demo():
+    """
+    Tasks start immediately and run in the background.
+    Use when you want to kick off work and do other things
+    before collecting the result.
+    """
+
+    # Create tasks — they START running right now
+    task_a  = asyncio.create_task(
+        fake_llm_call("Summarize this document"),
+        name="summarizer"
+    )
+
+    task_b = asyncio.create_task(
+        fake_llm_call("Extract key entities"),
+        name="extractor"
+    )
+ 
+    # While they run, do other work
+    print("  Tasks started. Doing other work...")
+    await asyncio.sleep(0.1)
+    print("  Still doing other work...")
+    await asyncio.sleep(0.1)
+
+    # Now collect results (they may already be done!)
+    summary = await task_a
+    entities = await task_b
+    print(f"  Summary:  {summary}")
+    print(f"  Entities: {entities}")
+
+    # ── Task cancellation ──────────────────────────────
+    long_task = asyncio.create_task(fake_llm_call("very long task", latency=5.0))
+    await asyncio.sleep(0.2)
+
+    long_task.cancel()   # Cancel it
+    try:
+        await long_task()
+    except asyncio.CancelledError:
+        print("  Task was cancelled cleanly")
+
+# LEVEL 4 — TIMEOUTS: NON-NEGOTIABLE IN PRODUCTION
+async def timeout_patterns():
+    """
+    ALWAYS set timeouts on external calls.
+    A hung API call = your agent hangs forever = production incident.
+    """
+    # ── Pattern 1: Single call timeout ────────────────
+    async def slow_api():
+        await asyncio.sleep(10)
+        return "finally done"
+    
+    try:
+        result = await asyncio.wait_for(slow_api(), timeout=2.0)
+    except asyncio.TimeoutError:
+        result = None
+        print("  API timed out after 2s — handled gracefully")
+
+    # ── Pattern 2: Timeout wrapper utility ────────────
+    async def with_timeout(coro, timeout: float, fallback=None):
+        """Wrap any coroutine with a timeout, return fallback on timeout."""
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError:
+            return fallback
+        
+    # Use it everywhere
+    result = await with_timeout(slow_api(), timeout=1.0, fallback={"error": "timeout"})
+    print(f"  With fallback: {result}")
+
+    # ── Pattern 3: Multiple calls, each with own timeout ──
+    results = await asyncio.gather(
+        with_timeout(fake_tool_call("fast", {}),  timeout=2.0),
+        with_timeout(slow_api(),                  timeout=0.5, fallback=None),
+        with_timeout(fake_tool_call("also_fast", {}), timeout=2.0),
+    )
+    print(f"  Mixed results: {[r is not None for r in results]}")  # [True, False, True]
+
+
+# LEVEL 5 — SEMAPHORE: RATE LIMITING LLM CALLS
+async def semaphore_rate_limiting():
+    """
+    LLM APIs enforce rate limits (e.g. 60 req/min).
+    Semaphores let you cap concurrent calls.
+ 
+    Without: blast 100 requests → 429 rate limit errors
+    With:    cap at 10 concurrent → stays within limit
+    """
+ 
+    # Claude/OpenAI free tier: ~5-10 req/sec
+    MAX_CONCURRENT = 5
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+ 
+    async def rate_limited_call(prompt: str) -> str:
+        async with semaphore:   # Blocks if MAX_CONCURRENT already running
+            return await fake_llm_call(prompt)
+ 
+    prompts = [f"Analyze document {i}" for i in range(30)]
+    start = time.perf_counter()
+    results = await asyncio.gather(*[
+        rate_limited_call(p) for p in prompts
+    ])
+    elapsed = time.perf_counter() - start
+    print(f"  Processed {len(results)} prompts in {elapsed:.2f}s")
+    print(f"  Throughput: {len(results)/elapsed:.1f} calls/sec (capped at {MAX_CONCURRENT} concurrent)")
+
+ 
 
