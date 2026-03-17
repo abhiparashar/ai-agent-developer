@@ -219,6 +219,102 @@ async def semaphore_rate_limiting():
     print(f"  Processed {len(results)} prompts in {elapsed:.2f}s")
     print(f"  Throughput: {len(results)/elapsed:.1f} calls/sec (capped at {MAX_CONCURRENT} concurrent)")
 
+# LEVEL 6 — ASYNC QUEUES: PRODUCER / CONSUMER
+async def queue_demo():
+    """
+    Producer/Consumer with asyncio.Queue.
+    Classic pattern for:
+    - Streaming log lines to an agent
+    - Processing events from a webhook
+    - Batching items before sending to LLM
+ 
+    Java equivalent: LinkedBlockingQueue + ExecutorService
+    """
+    queue: asyncio.Queue[str|None] = asyncio.Queue(maxsize=20)
+    errors_found = []
+
+    async def producer():
+        """Reads log lines and puts them in the queue."""
+        log_lines = [
+            "INFO: Server started on port 8080",
+            "ERROR: NullPointerException in PaymentProcessor.charge():87",
+            "INFO: Request GET /api/orders 200 45ms",
+            "ERROR: Connection timeout to PostgreSQL after 30s",
+            "WARN: Memory at 87%, GC pressure increasing",
+            "ERROR: Stripe API returned 402 Payment Required",
+        ]
+
+        for line in log_lines:
+            await queue.put(line)
+            await asyncio.sleep(0.05)
+
+        await queue.put(None)   # Sentinel: signals consumer to stop
+
+    async def consumer():
+        """Agent processes each log line."""
+        while True:
+            line = queue.get()
+            if line is None:
+                break
+            if "Error" in line:
+                errors_found.append(line)
+                # In real agent: trigger RCA, send Slack alert, etc. 
+            queue.task_done()
+
+    await asyncio.gather(producer(), consumer())
+    print(f"  Found {len(errors_found)} errors:")
+    for e in errors_found:
+        print(f"    → {e}")
+
+
+# LEVEL 7 — ASYNC GENERATORS: STREAMING LLM RESPONSES
+async def streaming_demo():
+    """
+    LLM APIs stream tokens as they're generated.
+    async generators let you process each token
+    as it arrives — making your agent feel instant.
+    """
+    async def stream_llm(prompt:str):
+        """Simulates a streaming LLM response (like Claude's stream=True)."""
+        response = f"This is a streaming response explaining {prompt} in detail."
+        for word in response.split():
+            await asyncio.sleep(0.08)  # Simulate token generation speed
+            yield word + " "
+
+    # ── Pattern 1: Print tokens as they arrive ─────────
+    print("  Streaming: ", end="", flush=True)
+    async for token in stream_llm("asyncio"):
+        print(token, end="", flush=True)
+    print()
+
+    # ── Pattern 2: Collect full response ───────────────
+    chunks = []
+    async for token in stream_llm("Python"):
+        chunks.append(token)
+    full_response = "".join(chunks)
+    print(f"  Full response ({len(full_response)} chars): {full_response[:50]}...")
+
+    # ── Pattern 3: Async generator pipeline ────────────
+    async def filter_stream(source, keyword: str):
+        """Transform a stream — filter, annotate, detect patterns."""
+        async for token in source:
+            if keyword.lower() in token.lower():
+                yield f"[MATCH:{keyword}] " + token
+            else:
+                yield token
+ 
+    print("  Filtered stream: ", end="", flush=True)
+    async for token in filter_stream(stream_llm("Python asyncio patterns"), "Python"):
+        print(token, end="", flush=True)
+    print()
+ 
+
+# LEVEL 8 — TOP 1%: PRODUCTION TOOL RUNNER
+
+
+
+ 
+
 
 
  
