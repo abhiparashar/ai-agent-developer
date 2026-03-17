@@ -27,6 +27,8 @@ RUN THIS FILE:
 import asyncio
 import time
 import random
+from dataclasses import dataclass
+from typing import Any, Callable, Coroutine
 # LEVEL 1 — COROUTINES: THE BUILDING BLOCK
 async def hello_async()-> str:
     print("  [coroutine] Starting...")
@@ -310,12 +312,173 @@ async def streaming_demo():
  
 
 # LEVEL 8 — TOP 1%: PRODUCTION TOOL RUNNER
+@dataclass
+class ToolResult:
+    tool_name: str
+    result: Any
+    latency_ms: float
+    success: bool
+    error: Exception | None = None
 
-
-
+async def run_agent_tools(
+    tool_calls: list[tuple[str, dict]],
+    max_concurrent: int = 5,
+    timeout_per_tool: float = 10.0,
+)->list[ToolResult]:
+    """
+    Production-grade parallel tool execution.
+    Combines: concurrency + rate limiting + timeouts +
+              error isolation + latency tracking.
  
-
-
-
+    This is the pattern used in real agent frameworks.
  
+    Args:
+        tool_calls:       List of (tool_name, args) pairs
+        max_concurrent:   Max simultaneous tool calls (rate limit)
+        timeout_per_tool: Per-tool timeout in seconds
+ 
+    Returns:
+        List of ToolResult with success/error status and latency
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
 
+    async def run_one(tool_name: str, args: dict)->ToolResult:
+        start = time.perf_counter
+        async with semaphore:
+            try:
+                result = await asyncio.wait_for(
+                    fake_tool_call(tool_name, args),
+                    timeout=timeout_per_tool,
+                )
+
+                return ToolResult(
+                    tool_name=tool_name,
+                    result=result,
+                    latency_ms=(time.perf_counter() - start) * 1000,
+                    success=True,
+                )
+            
+            except asyncio.TimeoutError:
+                return ToolResult(
+                    tool_name=tool_name, result=None,
+                    latency_ms=(time.perf_counter() - start) * 1000,
+                    success=False,
+                    error=TimeoutError(f"Exceeded {timeout_per_tool}s"),
+                )
+            
+            except Exception as e:
+                return ToolResult(
+                    tool_name=tool_name, result=None,
+                    latency_ms=(time.perf_counter() - start) * 1000,
+                    success=False, error=e,
+                )
+            
+    return await asyncio.gather(*[run_one(n, a) for n, a in tool_calls])
+
+async def retry_with_exponential_backoff(
+    coro_factory: Callable[[], Coroutine],
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    jitter: bool = True,
+):
+    """
+    Retry any async call with exponential backoff + jitter.
+    Essential for LLM API calls: 429 rate limits, 500 errors, timeouts.
+ 
+    Usage:
+        result = await retry_with_exponential_backoff(
+            lambda: llm_client.complete(prompt),
+            max_retries=3
+        )
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_factory()
+        except Exception as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                break
+            delay = min(base_delay * (2 ** attempt), max_delay)
+            if jitter:
+                delay += random.uniform(0, delay * 0.1)
+            print(f"  Attempt {attempt+1} failed ({exc}). Retry in {delay:.1f}s...")
+            await asyncio.sleep(delay)
+    raise last_exc
+
+
+# LEVEL 9 — ASYNCIO.LOCK: SHARED STATE IN AGENTS
+async def shared_state_demo():
+    """
+    When multiple coroutines modify shared state,
+    use asyncio.Lock to prevent race conditions.
+    Classic example: shared token counter for cost tracking.
+    """
+ 
+    class TokenCounter:
+        def __init__(self):
+            self._total = 0
+            self._lock = asyncio.Lock()
+ 
+        async def add(self, tokens: int):
+            async with self._lock:          # Only one coroutine at a time
+                self._total += tokens
+                await asyncio.sleep(0)      # Yield to allow others to proceed
+ 
+        @property
+        def total(self): return self._total
+ 
+    counter = TokenCounter()
+ 
+    async def make_call(call_id: int):
+        tokens_used = random.randint(100, 500)
+        await fake_llm_call(f"prompt {call_id}")
+        await counter.add(tokens_used)
+ 
+    await asyncio.gather(*[make_call(i) for i in range(10)])
+    print(f"  Total tokens used (no race condition): {counter.total}")
+ 
+ 
+# ══════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════
+ 
+async def main():
+    sections = [
+        ("LEVEL 1: Blocking vs Non-Blocking",        blocking_vs_nonblocking),
+        ("LEVEL 2: Parallel Tool Calls",              agent_tool_patterns),
+        ("LEVEL 3: Tasks & Cancellation",             tasks_demo),
+        ("LEVEL 4: Timeouts",                         timeout_patterns),
+        ("LEVEL 5: Semaphore Rate Limiting",          semaphore_rate_limiting),
+        ("LEVEL 6: Async Queue (Producer/Consumer)",  queue_demo),
+        ("LEVEL 7: Streaming LLM Responses",          streaming_demo),
+        ("LEVEL 9: Shared State with Lock",           shared_state_demo),
+    ]
+ 
+    for title, fn in sections:
+        print(f"\n{'='*60}")
+        print(f"  {title}")
+        print(f"{'='*60}")
+        await fn()
+ 
+    # Level 8: Production tool runner
+    print(f"\n{'='*60}")
+    print("  LEVEL 8: Production Tool Runner")
+    print(f"{'='*60}")
+    tool_calls = [
+        ("web_search",   {"query": "latest AI research"}),
+        ("get_user",     {"id": "usr_123"}),
+        ("query_db",     {"sql": "SELECT * FROM orders LIMIT 10"}),
+        ("send_email",   {"to": "team@company.com"}),
+        ("slow_tool",    {"timeout_sim": 15}),  # Will timeout
+    ]
+    results = await run_agent_tools(tool_calls, max_concurrent=3, timeout_per_tool=1.0)
+    for r in results:
+        icon = "✅" if r.success else "❌"
+        print(f"  {icon} {r.tool_name:20s}  {r.latency_ms:6.0f}ms  {'OK' if r.success else str(r.error)}")
+ 
+ 
+if __name__ == "__main__":
+    asyncio.run(main())
+ 
