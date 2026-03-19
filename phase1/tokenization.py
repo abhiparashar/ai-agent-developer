@@ -13,3 +13,18 @@ print(tokens)
 print(f"characters: {len(text)}")
 print(f"Tokens: {len(tokens)}")
 print(f"Ratio: {len(text)/len(tokens):.1f} chars/token") 
+
+# Code is denser in tokens than prose
+code = """
+public class HelloWorld {
+    public static void main(String[] args) {
+        System.out.println("Hello World");
+    }
+}
+"""
+code_tokens = enc.encode(code)
+print(f"Code chars: {len(code)}, tokens: {len(code_tokens)}")
+
+# See exact breakdown
+for token_id in tokens:
+    print(f"{token_id:6d} -> '{enc.decode([token_id])}'")
